@@ -1,20 +1,28 @@
-/*jslint indent: 2, unparam: true*/
-/*global $: false, document: false, togglbutton: false, createTag: false*/
 'use strict';
 
-togglbutton.render('#tickets-show:not(.toggl)', {}, function (elem) {
+togglbutton.render(
+  '#ticketDetailsContainer:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const container = createTag('li', 'toggle-container');
 
-  var link,
-    container = createTag('li', 'toggle-container'),
-    description = $('span.ticket-number', elem).textContent + ' ' + $('.ticket-summary > h1').textContent,
-    project = $('h1.header-w > span').textContent;
+    const descFunc = function () {
+      return document
+        .querySelector('#copyButton1')
+        .getAttribute('data-clipboard-text');
+    };
 
-  link = togglbutton.createTimerLink({
-    className: 'assembla',
-    description: description,
-    projectName: project,
-  });
+    const projectFunc = function () {
+      return $('h1.header-w > span').textContent || '';
+    };
 
-  container.appendChild(link);
-  $('ul.menu-submenu').appendChild(container);
-});
+    const link = togglbutton.createTimerLink({
+      className: 'assembla',
+      description: descFunc,
+      projectName: projectFunc
+    });
+
+    container.appendChild(link);
+    $('ul.menu-submenu').appendChild(container);
+  }
+);

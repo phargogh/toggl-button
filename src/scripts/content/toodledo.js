@@ -1,30 +1,44 @@
-/*jslint indent: 2 */
-/*global $: false, document: false, togglbutton: false*/
-
 'use strict';
 
-togglbutton.render('.row:not(.toggl)', {observe: true}, function (elem) {
-  var link,
-    newElem,
-    landmarkElem,
-    taskElem = $('.task', elem),
-    goalElem = $('.col1024', elem),
-    folderElem = $('.col1', elem),
-    folderName = folderElem && folderElem.firstChild.textContent;
+togglbutton.render(
+  '.row:not(.toggl), .taskRow:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    if (elem.querySelectorAll('.toggl-button').length) {
+      return;
+    }
 
-  folderName = (!folderName || folderName === "No Folder") ? "" : " - " + folderName;
+    const newLayout = $('.tc_title', elem);
+    const taskElem = newLayout || $('.task', elem);
+    const folderElem = $('.col1', elem) || $('.taskCell:not(.tc_title)', elem);
+    let folderName = folderElem && folderElem.firstChild.textContent;
 
-  link = togglbutton.createTimerLink({
-    className: 'toodledo',
-    buttonType: 'minimal',
-    description: taskElem.textContent + folderName,
-    projectName: goalElem && goalElem.textContent
-  });
+    folderName =
+      !folderName || folderName === 'No Folder' ? '' : ' - ' + folderName;
 
-  newElem = document.createElement('div');
-  newElem.appendChild(link);
-  newElem.setAttribute('style', 'float:left;width:30px;height:20px;');
+    const link = togglbutton.createTimerLink({
+      className: 'toodledo',
+      buttonType: 'minimal',
+      description: taskElem.textContent + folderName
+    });
 
-  landmarkElem = $('.subm', elem) || $('.subp', elem) || $('.ax', elem);
-  elem.insertBefore(newElem, landmarkElem.nextSibling);
-});
+    const newElem = document.createElement('div');
+    newElem.appendChild(link);
+    newElem.setAttribute(
+      'style',
+      (newLayout ? 'display:inline-block;' : 'float:left;') +
+        'width:30px;height:20px;'
+    );
+    if (!newLayout) {
+      link.setAttribute('style', 'top:1px;');
+    }
+
+    const landmarkElem =
+      $('.subm', elem) ||
+      $('.subp', elem) ||
+      $('.ax', elem) ||
+      $('.cellAction', elem) ||
+      $('.cellStarSmall', elem);
+    landmarkElem.parentElement.insertBefore(newElem, landmarkElem.nextSibling);
+  }
+);

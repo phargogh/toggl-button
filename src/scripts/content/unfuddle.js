@@ -1,19 +1,24 @@
-/*jslint indent: 2 */
-/*global $: false, document: false, togglbutton: false*/
-
 'use strict';
 
-togglbutton.render('.ticket-fields-panel:not(.toggl)', {observe: true}, function (elem) {
-  var link, description,
-    titleElem = $("h1.summary .number", elem),
-    numElem   = $("h1.summary .text-field-text", elem);
+togglbutton.render(
+  '.ticket-fields-panel:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const titleElem = $('h1.summary .number', elem);
+    const numElem = $('h1.summary .text-field-text', elem);
 
-  description = titleElem.innerText + ": " + numElem.innerText;
+    const projectName = $(
+      '#account_header .nav:not(.right-actions-top) .dropdown-toggle'
+    ).textContent;
 
-  link = togglbutton.createTimerLink({
-    className: 'unfuddle',
-    description: description,
-  });
+    const description = titleElem.textContent + ': ' + numElem.textContent;
 
-  $(".primary-properties", elem).appendChild(link);
-});
+    const link = togglbutton.createTimerLink({
+      className: 'unfuddle',
+      description: description,
+      projectName: projectName
+    });
+
+    $('.primary-properties', elem).appendChild(link);
+  }
+);

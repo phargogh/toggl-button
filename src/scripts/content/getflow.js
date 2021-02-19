@@ -1,20 +1,46 @@
-/*jslint indent: 2 */
-/*global $: false, document: false, togglbutton: false*/
 'use strict';
-togglbutton.render('.task-list-section-collection-list li:not(.toggl)', {observe: true}, function (elem) {
-  var link,
-    container = $('.task-list-item-details', elem);
 
-  if (container === null) {
-    return;
+// List items
+togglbutton.render(
+  '.task-list-section-collection-list li:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const container = $('.content-list-item-label', elem);
+    const description = $('.content-list-item-name-wrapper', container).textContent;
+
+    // Have to remove the empty character projectName gets at the end
+    const link = togglbutton.createTimerLink({
+      className: 'getflow',
+      description: description,
+      projectName: $('.task-list-section-header-link').textContent.trim()
+    });
+
+    container.appendChild(link);
   }
+);
 
-  // Have to remove the empty character projectName gets at the end
-  link = togglbutton.createTimerLink({
-    className: 'getflow',
-    description: $('.content-list-item-name-wrapper', elem).textContent,
-    projectName: $('.content-header-main-title .copy').textContent.slice(0, -1)
-  });
+// Right side panel
+togglbutton.render(
+  '#app-pane .task-pane-name-field-textarea:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const container = $('#app-pane .task-details-list');
 
-  container.appendChild(link);
-});
+    const descFunc = function () {
+      return elem.value;
+    };
+
+    const projectFunc = function () {
+      return $('#app-pane .task-pane-details-list-link').textContent.trim();
+    };
+
+    // Have to remove the empty character projectName gets at the end
+    const link = togglbutton.createTimerLink({
+      className: 'getflow',
+      description: descFunc,
+      projectName: projectFunc
+    });
+
+    container.appendChild(link);
+  }
+);

@@ -1,30 +1,36 @@
-/*jslint indent: 2, unparam: true*/
-/*global document: false, MutationObserver: false, chrome: false, window: false*/
-"use strict";
+import { ProjectAutoComplete, TagAutoComplete } from './lib/autocomplete';
+/* eslint-disable-next-line import/no-webpack-loader-syntax */
+import togglButtonSVG from '!!raw-loader!./icons/toggl-button.svg';
+const browser = require('webextension-polyfill');
 
-function $(s, elem) {
+let projectAutocomplete; let tagAutocomplete;
+
+window.$ = (s, elem) => {
   elem = elem || document;
   return elem.querySelector(s);
-}
+};
 
-function createTag(name, className, innerHTML) {
-  var tag = document.createElement(name);
+window.$$ = (s, elem) => {
+  elem = elem || document;
+  return elem.querySelectorAll(s);
+};
+
+window.createTag = (name, className, textContent) => {
+  const tag = document.createElement(name);
   tag.className = className;
 
-  if (innerHTML) {
-    tag.innerHTML = innerHTML;
+  if (textContent) {
+    tag.textContent = textContent;
   }
 
   return tag;
-}
+};
 
-function createLink(className, tagName, linkHref) {
-  var link;
-
+function createLink (className, tagName, linkHref) {
   // Param defaults
-  tagName  = tagName  || 'a';
+  tagName = tagName || 'a';
   linkHref = linkHref || '#';
-  link     = createTag(tagName, className);
+  const link = createTag(tagName, className);
 
   if (tagName === 'a') {
     link.href = linkHref;
@@ -34,123 +40,260 @@ function createLink(className, tagName, linkHref) {
   return link;
 }
 
-function invokeIfFunction(trial) {
+function invokeIfFunction (trial) {
   if (trial instanceof Function) {
     return trial();
   }
   return trial;
 }
 
-function getFullPageHeight() {
-  var body = document.body,
-    html = document.documentElement;
-
-  return Math.max(body.scrollHeight, body.offsetHeight,
-                         html.clientHeight, html.scrollHeight, html.offsetHeight);
-}
-
-function setCursorAtBeginning(elem) {
+function setCursorAtBeginning (elem) {
   elem.focus();
   elem.setSelectionRange(0, 0);
   elem.scrollLeft = 0;
 }
 
-var togglbutton = {
+function secondsToTime (duration, format) {
+  duration = Math.abs(duration);
+  let response;
+
+  let seconds = parseInt(duration % 60, 10);
+
+  let minutes = parseInt((duration / 60) % 60, 10);
+
+  let hours = parseInt(duration / (60 * 60), 10);
+
+  let hoursString = '';
+
+  if (hours > 0) {
+    hours = hours < 10 ? '0' + hours : hours;
+    hoursString += hours + 'h ';
+  }
+
+  minutes = minutes < 10 ? '0' + minutes : minutes;
+  seconds = seconds < 10 ? '0' + seconds : seconds;
+
+  // Use the format defined in user preferences
+  if (format === 'improved') {
+    response = hours + ':' + minutes + ':' + seconds;
+  } else if (format === 'decimal') {
+    response = hours + '.' + parseInt((minutes * 100) / 60, 10) + 'h';
+  } else {
+    response = hoursString + minutes + 'm ' + seconds + 's';
+  }
+
+  return response;
+}
+
+function setLinkText (link, text) {
+  let span = link.querySelector('svg+span');
+  const title = link.querySelector('svg title');
+
+  if (!span) {
+    span = document.createElement('span');
+    link.appendChild(span);
+  }
+
+  title.textContent = text;
+  span.textContent = text;
+}
+
+window.togglbutton = {
+  $billable: null,
   isStarted: false,
   element: null,
   serviceName: '',
-  mousedownTrigger: null,
   projectBlurTrigger: null,
   taskBlurTrigger: null,
   tagsVisible: false,
   hasTasks: false,
-  currentDescription: "",
-  fullPageHeight: getFullPageHeight(),
-  fullVersion: "TogglButton",
-  render: function (selector, opts, renderer) {
-    chrome.extension.sendMessage({type: 'activate'}, function (response) {
-      if (response.success) {
-        togglbutton.fullVersion = response.version;
-        if (opts.observe) {
-          var observer = new MutationObserver(function (mutations) {
+  entries: {},
+  projects: {},
+  user: {},
+  duration_format: '',
+  currentDescription: '',
+  fullVersion: 'TogglButton',
+  render: function (selector, opts, renderer, mutationSelector) {
+    browser.runtime.sendMessage({ type: 'activate' })
+      .then(function (response) {
+        if (response.success) {
+          try {
+            togglbutton.user = response.user;
+            togglbutton.entries = response.user.time_entries;
+            togglbutton.projects = response.user.projectMap;
+            togglbutton.fullVersion = response.version;
+            togglbutton.duration_format = response.user.duration_format;
+            if (opts.observe) {
+              let debouncer = null;
+              const observer = new MutationObserver(function (mutations) {
+                // If mutationSelector is defined, render the start timer link only when an element
+                // matching the selector changes.
+                // Multiple selectors can be used by comma separating them.
+                // mutationSelector = mutationSelector ? `${mutationSelector},*:not(.toggl-button)` : '*:not(.toggl-button)';
+                if (mutationSelector) {
+                  const matches = mutations.filter(function (mutation) {
+                    return mutation.target.matches(mutationSelector);
+                  });
+                  if (!matches.length) {
+                    return;
+                  }
+                }
+                if (opts.debounceInterval > 0) {
+                  if (debouncer) {
+                    clearTimeout(debouncer);
+                  }
+                  debouncer = setTimeout(function () {
+                    togglbutton.renderTo(selector, renderer);
+                  }, opts.debounceInterval);
+                } else {
+                  togglbutton.renderTo(selector, renderer);
+                }
+              });
+              const observeTarget = opts.observeTarget || document;
+              observer.observe(observeTarget, { childList: true, subtree: true });
+            }
             togglbutton.renderTo(selector, renderer);
-          });
-          observer.observe(document, {childList: true, subtree: true});
+          } catch (e) {
+            browser.runtime.sendMessage({
+              type: 'error',
+              stack: e.stack,
+              category: 'Content'
+            });
+          }
         }
-        togglbutton.renderTo(selector, renderer);
-      }
-    });
+      })
+      .catch((e) => {
+        browser.runtime.sendMessage({
+          type: 'error',
+          stack: e.stack || null,
+          category: 'Content'
+        });
+      });
   },
 
   renderTo: function (selector, renderer) {
-    var i, len, elems = document.querySelectorAll(selector);
+    let i;
+
+    let len;
+
+    const elems = document.querySelectorAll(selector);
+    if (!elems.length) {
+      return;
+    }
+
     for (i = 0, len = elems.length; i < len; i += 1) {
       elems[i].classList.add('toggl');
     }
-    for (i = 0, len = elems.length; i < len; i += 1) {
-      renderer(elems[i]);
+
+    // Catch content errors here as well as render() in case of async rendering
+    // (MutationObserver)
+    try {
+      for (i = 0, len = elems.length; i < len; i += 1) {
+        renderer(elems[i]);
+      }
+      togglbutton.queryAndUpdateTimerLink();
+    } catch (e) {
+      browser.runtime.sendMessage({
+        type: 'error',
+        stack: e.stack,
+        category: 'Content'
+      });
     }
   },
 
   topPosition: function (rect, editFormWidth, editFormHeight) {
-    var left = (rect.left - 10),
-      top = (rect.top + document.body.scrollTop - 10);
+    let left = rect.left - 10;
+
+    let top = rect.top + document.body.scrollTop - 10;
 
     if (left + editFormWidth > window.innerWidth) {
       left = window.innerWidth - 10 - editFormWidth;
     }
-    if (top + editFormHeight > togglbutton.fullPageHeight) {
+    if (top + editFormHeight > window.innerHeight) {
       top = window.innerHeight + document.body.scrollTop - 10 - editFormHeight;
     }
-    return {left: left, top: top};
+
+    return { left: left, top: top };
   },
 
-  getSelectedTags: function () {
-    var tags = [],
-      tag,
-      i,
-      s = document.getElementById("toggl-button-tag");
-    for (i = 0; i < s.options.length; i += 1) {
-      if (s.options[i].selected === true) {
-        tag = s.options[i].innerHTML;
-        tags.push(tag);
+  calculateTrackedTime: function () {
+    let duration = 0;
+
+    const description = togglbutton.mainDescription.toLowerCase();
+
+    const projectId = togglbutton.findProjectIdByName(
+      togglbutton.currentProject);
+
+    if (togglbutton.entries) {
+      togglbutton.entries.forEach(function (entry) {
+        if (
+          !!entry.description &&
+          entry.description.toLowerCase() === description &&
+          entry.pid === projectId
+        ) {
+          duration += entry.duration;
+        }
+      });
+    }
+
+    return secondsToTime(duration, togglbutton.duration_format);
+  },
+
+  findProjectByPid: function (pid) {
+    let key;
+    for (key in togglbutton.user.projectMap) {
+      if (
+        togglbutton.user.projectMap.hasOwnProperty(key) &&
+        togglbutton.user.projectMap[key].id === pid
+      ) {
+        return togglbutton.user.projectMap[key];
       }
     }
-    return tags;
+    return undefined;
   },
 
-  delegateTaskClick: function (e) {
-    // Ignore this click if it caused the last task blur.
-    if (togglbutton.taskBlurTrigger === e.target) {
-      togglbutton.taskBlurTrigger = null;
-      return;
+  updateBillable: function (pid, noOverwrite) {
+    let project;
+
+    let i;
+
+    let pwid = togglbutton.user.default_wid;
+
+    const ws = togglbutton.user.workspaces;
+
+    let premium;
+
+    if (pid !== 0) {
+      project = togglbutton.findProjectByPid(pid);
+      if (!project) {
+        return;
+      }
+      pwid = project.wid;
     }
 
-    var dropdown = document.getElementById('toggl-button-task'),
-      event = document.createEvent('MouseEvents');
-    event.initMouseEvent('mousedown', true, true, window);
-    dropdown.dispatchEvent(event);
+    for (i = 0; i < ws.length; i++) {
+      if (ws[i].id === pwid) {
+        premium = ws[i].premium;
+        break;
+      }
+    }
+
+    togglbutton.toggleBillable(premium);
+
+    if (!noOverwrite && (pid !== 0 && project.billable)) {
+      togglbutton.$billable.classList.toggle('tb-checked', true);
+    }
   },
 
-
-  resetTasks: function () {
-    document.querySelector("#toggl-button-task-placeholder").removeEventListener('click', togglbutton.delegateTaskClick);
-    document.querySelector("#toggl-button-task-placeholder > div").innerHTML = "Add task";
-    document.querySelector("#toggl-button-task").innerHTML = "";
+  toggleBillable: function (visible) {
+    const tabIndex = visible ? '0' : '-1';
+    togglbutton.$billable.setAttribute('tabindex', tabIndex);
+    togglbutton.$billable.classList.toggle('no-billable', !visible);
   },
 
-  generateProjectLabel: function (select, pid) {
-    var selected = select.options[select.selectedIndex],
-      parent,
-      result = "";
-    if (parseInt(pid, 10) === 0 || !selected) {
-      return "Add project";
-    }
-    parent = selected.parentNode;
-    if (parent.tagName === "OPTGROUP") {
-      result = parent.label + " - ";
-    }
-    return result + selected.text;
+  setupBillable: function (billable, pid) {
+    togglbutton.updateBillable(pid, true);
+    togglbutton.$billable.classList.toggle('tb-checked', billable);
   },
 
   addEditForm: function (response) {
@@ -159,253 +302,206 @@ var togglbutton = {
       return;
     }
 
-    var pid = (!!response.entry.pid) ? response.entry.pid : 0,
-      projectSelect,
-      placeholder,
-      handler,
-      position,
-      editFormHeight = 350,
-      editFormWidth = 240,
-      submitForm,
-      taskSelect,
-      updateTags,
-      closeTagsList,
-      elemRect,
-      div = document.createElement('div'),
-      editForm,
-      togglButtonDescription;
+    const pid = response.entry.pid;
+    const tid = response.entry.tid;
+    const editFormHeight = 300;
+    const editFormWidth = 360;
+    const div = document.createElement('div');
+    let editForm;
+    let togglButtonDescription;
 
-    elemRect = togglbutton.element.getBoundingClientRect();
-    editForm = $("#toggl-button-edit-form");
-    position = togglbutton.topPosition(elemRect, editFormWidth, editFormHeight);
+    const elemRect = togglbutton.element.getBoundingClientRect();
+    editForm = $('#toggl-button-edit-form');
+    const position = togglbutton.topPosition(
+      elemRect, editFormWidth, editFormHeight);
 
     if (editForm !== null) {
-      togglbutton.fetchTasks(pid, editForm);
-      togglButtonDescription = $("#toggl-button-description");
-      togglButtonDescription.value = response.entry.description;
-      $("#toggl-button-project").value = pid;
-      projectSelect = document.getElementById("toggl-button-project");
-      placeholder = $("#toggl-button-project-placeholder > div");
-      placeholder.innerHTML = placeholder.title = togglbutton.generateProjectLabel(projectSelect, pid);
-      togglbutton.resetTasks();
-      $("#toggl-button-tag-placeholder > div", editForm).innerHTML = "Add tags";
-      $("#toggl-button-tag").value = "";
-      editForm.style.left = position.left + "px";
-      editForm.style.top = position.top + "px";
-      editForm.style.display = "block";
+      togglButtonDescription = $('#toggl-button-description');
+      togglButtonDescription.value = response.entry.description || '';
+
+      projectAutocomplete.setup(pid, tid);
+      tagAutocomplete.setup(response.entry.tags, response.entry.wid);
+      togglbutton.setupBillable(!!response.entry.billable, pid);
+
+      editForm.style.left = position.left + 'px';
+      editForm.style.top = position.top + 'px';
+      editForm.style.display = 'block';
       setCursorAtBeginning(togglButtonDescription);
       return;
     }
 
-    div.innerHTML = response.html.replace("{service}", togglbutton.serviceName);
+    div.innerHTML = response.html.replace('{service}', togglbutton.serviceName);
     editForm = div.firstChild;
-    editForm.style.left = position.left + "px";
-    editForm.style.top = position.top + "px";
-    document.body.appendChild(editForm);
-    togglbutton.fetchTasks(pid, editForm);
+    editForm.style.left = position.left + 'px';
+    editForm.style.top = position.top + 'px';
+    editForm.style.position = 'fixed';
+    editForm.classList.add('toggl-integration');
 
-    handler = function (e) {
-      if (!/toggl-button/.test(e.target.className) && !/toggl-button/.test(e.target.parentElement.className)) {
-        closeTagsList(true);
-        editForm.style.display = "none";
-        this.removeEventListener("click", handler);
-      }
+    if (response.darkMode) {
+      editForm.classList.add('dark');
+    }
+
+    // Some integrations uses trap zones which prevents from focus everything inside this element
+    // See: https://github.com/theKashey/focus-lock
+    editForm.setAttribute('data-no-focus-lock', true);
+
+    // if a container was provided to createTimerlink, append editForm to that container
+    // for avoiding unwanted interactions with some services' events
+    const container = response.container ? document.querySelector(response.container) : document.body;
+    container.appendChild(editForm);
+    togglbutton.$billable = $('.tb-billable', editForm);
+
+    projectAutocomplete = new ProjectAutoComplete('project', 'li', togglbutton);
+    tagAutocomplete = new TagAutoComplete('tag', 'li', togglbutton);
+
+    const closeForm = function () {
+      projectAutocomplete.closeDropdown();
+      tagAutocomplete.closeDropdown();
+      editForm.style.display = 'none';
     };
 
-    submitForm = function (that) {
-      var taskButton = $("#toggl-button-task"),
-        selectedProject = $("#toggl-button-project"),
-        request = {
-          type: "update",
-          description: $("#toggl-button-description").value,
-          pid: selectedProject.value,
-          projectName: selectedProject.options[selectedProject.selectedIndex].text,
-          tags: togglbutton.getSelectedTags(),
-          tid: (taskButton && taskButton.value) ? taskButton.value : null,
-          service: togglbutton.serviceName
-        };
-      chrome.extension.sendMessage(request);
-      closeTagsList(true);
-      editForm.style.display = "none";
+    const submitForm = function (that) {
+      const selected = projectAutocomplete.getSelected();
+
+      const billable = !!document.querySelector(
+        '.tb-billable.tb-checked:not(.no-billable)'
+      );
+
+      const request = {
+        type: 'update',
+        description: $('#toggl-button-description').value,
+        pid: selected.pid,
+        projectName: selected.name,
+        tags: tagAutocomplete.getSelected(),
+        tid: selected.tid,
+        billable: billable,
+        service: togglbutton.serviceName
+      };
+      browser.runtime.sendMessage(request);
+      closeForm();
     };
 
-    updateTags = function (open) {
-      var tags = togglbutton.getSelectedTags(),
-        tagsPlaceholder = $("#toggl-button-tag-placeholder > div", editForm);
-
-      if (open) {
-        tagsPlaceholder.innerHTML = tagsPlaceholder.title = "Save tags";
-        return;
-      }
-
-      if (tags.length) {
-        tags = tags.join(',');
-      } else {
-        tags = "Add tags";
-      }
-      tagsPlaceholder.innerHTML = tagsPlaceholder.title = tags;
-    };
-
-    closeTagsList = function (close) {
-      var dropdown = document.getElementById('toggl-button-tag');
-      if (close) {
-        dropdown.style.display = "none";
-        togglbutton.tagsVisible = false;
-        return;
-      }
-      if (togglbutton.tagsVisible) {
-        dropdown.style.display = "none";
-        updateTags();
-      } else {
-        dropdown.style.display = "block";
-        updateTags(true);
-        dropdown.focus();
-      }
-      togglbutton.tagsVisible = !togglbutton.tagsVisible;
-    };
-
-    togglButtonDescription = $("#toggl-button-description", editForm);
-    togglButtonDescription.value = response.entry.description;
+    // Fill in data if edit form was not present
+    togglButtonDescription = $('#toggl-button-description', editForm);
+    togglButtonDescription.value = response.entry.description || '';
     setCursorAtBeginning(togglButtonDescription);
-    $("#toggl-button-project", editForm).value = pid;
-    projectSelect = $("#toggl-button-project", editForm);
-    placeholder = $("#toggl-button-project-placeholder > div", editForm);
-    placeholder.innerHTML = placeholder.title = togglbutton.generateProjectLabel(projectSelect, pid);
-    $("#toggl-button-hide", editForm).addEventListener('click', function (e) {
-      closeTagsList(true);
-      editForm.style.display = "none";
+    projectAutocomplete.setup(pid, tid);
+    tagAutocomplete.setSelected(response.entry.tags);
+    tagAutocomplete.setWorkspaceId(response.entry.wid);
+
+    togglbutton.setupBillable(!!response.entry.billable, pid);
+
+    // Data fill end
+    $('#toggl-button-hide', editForm).addEventListener('click', function (e) {
+      closeForm();
     });
 
-    $("#toggl-button-update", editForm).addEventListener('click', function (e) {
+    $('#toggl-button-update', editForm).addEventListener('click', function (e) {
       submitForm(this);
     });
 
-    $("form", editForm).addEventListener('submit', function (e) {
+    $('#toggl-button-update').addEventListener('keydown', function (e) {
+      if (e.code === 'Enter' || e.code === 'Space') {
+        submitForm(this);
+      }
+    });
+
+    // Cancel button
+    $('#tb-edit-form-cancel', editForm).addEventListener('click', function (e) {
+      e.preventDefault();
+      closeForm();
+    });
+    $('#tb-edit-form-cancel').addEventListener('keydown', function (e) {
+      if (e.code === 'Enter' || e.code === 'Space') {
+        e.preventDefault();
+        closeForm();
+      }
+    });
+
+    $('form', editForm).addEventListener('submit', function (e) {
       submitForm(this);
       e.preventDefault();
     });
 
-    $(".toggl-button", editForm).addEventListener('click', function (e) {
-      var link;
+    $('.toggl-button', editForm).addEventListener('click', function (e) {
       e.preventDefault();
-      link = togglbutton.element;
+      const link = togglbutton.element;
       link.classList.remove('active');
       link.style.color = '';
-      if (!link.classList.contains("min")) {
-        link.innerHTML = 'Start timer';
+      if (!link.classList.contains('min')) {
+        setLinkText(link, 'Start Timer');
       }
-      chrome.extension.sendMessage({type: 'stop'}, togglbutton.addEditForm);
-      closeTagsList(true);
-      editForm.style.display = "none";
+      browser.runtime
+        .sendMessage({ type: 'stop' })
+        .then(togglbutton.addEditForm);
+
+      closeForm();
       return false;
     });
-    document.addEventListener('mousedown', function (e) {
-      togglbutton.mousedownTrigger = e.target;
-    });
-    document.addEventListener('mouseup', function (e) {
-      togglbutton.mousedownTrigger = null;
-    });
 
-    $("#toggl-button-project-placeholder", editForm).addEventListener('click', function (e) {
-      // Ignore this click if it caused the last project blur.
-      if (togglbutton.projectBlurTrigger === e.target) {
-        togglbutton.projectBlurTrigger = null;
-        return;
+    function closeOnClickOutside (e) {
+      if (editForm.style.display !== 'none') {
+        const editFormPopup = document.getElementById('toggl-button-edit-form');
+        if (!editFormPopup.contains(e.target)) {
+          closeForm();
+          return false;
+        }
       }
-
-      var dropdown = document.getElementById('toggl-button-project'),
-        event = document.createEvent('MouseEvents');
-      event.initMouseEvent('mousedown', true, true, window);
-      dropdown.dispatchEvent(event);
-    });
-
-    $("#toggl-button-tag-placeholder", editForm).addEventListener('click', function (e) {
-      closeTagsList(false);
-    });
-
-    projectSelect.addEventListener('change', function (e) {
-      placeholder = $("#toggl-button-project-placeholder > div", editForm);
-      placeholder.innerHTML = placeholder.title = togglbutton.generateProjectLabel(this, this.value);
-
-      // Force blur.
-      togglbutton.projectBlurTrigger = null;
-      projectSelect.blur();
-
-      togglbutton.fetchTasks(this.value, editForm);
-    });
-
-    projectSelect.addEventListener('click', function () {
-      // Catch click in case user selects an already-selected item - force blur.
-      togglbutton.projectBlurTrigger = null;
-      projectSelect.blur();
-    });
-
-    projectSelect.addEventListener('blur', function () {
-      togglbutton.projectBlurTrigger = togglbutton.mousedownTrigger;
-    });
-
-    taskSelect = $("#toggl-button-task", editForm);
-    taskSelect.addEventListener('change', function (e) {
-      var taskPlaceholder = $("#toggl-button-task-placeholder > div", editForm);
-      taskPlaceholder.innerHTML = taskPlaceholder.title = (taskSelect.value === "0") ? "Add task" : taskSelect.options[taskSelect.selectedIndex].text;
-
-      // Force blur.
-      togglbutton.taskBlurTrigger = null;
-      taskSelect.blur();
-    });
-
-    taskSelect.addEventListener('click', function () {
-      // Catch click in case user selects an already-selected item - force blur.
-      togglbutton.taskBlurTrigger = null;
-      projectSelect.blur();
-    });
-
-    taskSelect.addEventListener('blur', function (e) {
-      togglbutton.taskBlurTrigger = togglbutton.mousedownTrigger;
-    });
-
-    document.addEventListener("click", handler);
-  },
-
-  fetchTasks: function (projectId, editForm) {
-    var tasksRow = document.getElementById("toggl-button-tasks-row");
-    togglbutton.resetTasks();
-    if (!togglbutton.hasTasks || projectId === 0) {
-      tasksRow.style.display = "none";
-      return;
     }
-    // If tasks are available, populate the task dropdown.
-    chrome.extension.sendMessage({type: 'getTasksHtml', projectId: projectId}, function (response) {
-      if (response && response.success && response.html) {
-        $('#toggl-button-task').innerHTML = response.html;
-        $("#toggl-button-task-placeholder", editForm).addEventListener('click', togglbutton.delegateTaskClick);
-        tasksRow.style.display = "block";
-      } else {
-        tasksRow.style.display = "none";
+
+    document.addEventListener('click', closeOnClickOutside);
+
+    /* prevent certain host webapps from processing key commands */
+    $('form', editForm).addEventListener('keydown', function (e) {
+      e.stopPropagation();
+    });
+
+    togglbutton.$billable.addEventListener('click', function () {
+      this.classList.toggle('tb-checked');
+    });
+
+    togglbutton.$billable.addEventListener('keydown', function (e) {
+      let prevent = false;
+      if (e.code === 'Space') {
+        prevent = true;
+        this.classList.toggle('tb-checked');
       }
+
+      if (e.code === 'ArrowLeft') {
+        prevent = true;
+        this.classList.toggle('tb-checked', false);
+      }
+
+      if (e.code === 'ArrowRight') {
+        prevent = true;
+        this.classList.toggle('tb-checked', true);
+      }
+
+      if (prevent) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    });
+
+    projectAutocomplete.onChange(function (selected) {
+      const project = togglbutton.findProjectByPid(selected.pid);
+
+      const wid = project ? project.wid : response.entry.wid;
+
+      tagAutocomplete.setWorkspaceId(wid);
     });
   },
 
   createTimerLink: function (params) {
-    var link = createLink('toggl-button');
-    togglbutton.currentDescription = invokeIfFunction(params.description);
-    function activate() {
-      if (document.querySelector(".toggl-button.active")) {
-        document.querySelector(".toggl-button.active").classList.remove('active');
-      }
-      link.classList.add('active');
-      link.style.color = '#1ab351';
-      if (params.buttonType !== 'minimal') {
-        link.innerHTML = 'Stop timer';
-      }
-    }
+    let link = createLink('toggl-button');
 
-    function deactivate() {
-      link.classList.remove('active');
-      link.style.color = '';
-      if (params.buttonType !== 'minimal') {
-        link.innerHTML = 'Start timer';
-      }
+    const project = invokeIfFunction(params.projectName);
+    const description = invokeIfFunction(params.description);
+    togglbutton.currentProject = project;
+    togglbutton.currentDescription = description;
+    link.title = description + (project ? ' - ' + project : '');
+    if (params.calculateTotal) {
+      togglbutton.mainDescription = description;
     }
 
     link.classList.add(params.className);
@@ -414,20 +510,30 @@ var togglbutton = {
     if (params.buttonType === 'minimal') {
       link.classList.add('min');
       link.removeChild(link.firstChild);
+      link.title = 'Start timer: ' + link.title;
+    }
+
+    link.innerHTML = togglButtonSVG;
+
+    if (params.buttonType !== 'minimal') {
+      setLinkText(link, 'Start Timer');
     }
 
     link.addEventListener('click', function (e) {
-      var opts;
+      let opts;
       e.preventDefault();
+      e.stopPropagation();
+      link = e.currentTarget;
 
       if (link.classList.contains('active')) {
-        deactivate();
+        togglbutton.deactivateTimerLink(link);
         opts = {
           type: 'stop',
+          respond: true,
           service: togglbutton.serviceName
         };
       } else {
-        activate();
+        togglbutton.activateTimerLink(link);
         opts = {
           type: 'timeEntry',
           respond: true,
@@ -435,73 +541,148 @@ var togglbutton = {
           description: invokeIfFunction(params.description),
           tags: invokeIfFunction(params.tags),
           projectName: invokeIfFunction(params.projectName),
-          createdWith: togglbutton.fullVersion + "-" + togglbutton.serviceName,
-          service: togglbutton.serviceName
+          createdWith: togglbutton.fullVersion + '-' + togglbutton.serviceName,
+          service: togglbutton.serviceName,
+          url: window.location.href,
+          container: params.container || ''
         };
       }
-      togglbutton.element = e.target;
-      chrome.extension.sendMessage(opts, togglbutton.addEditForm);
+      togglbutton.element = e.currentTarget;
+
+      browser.runtime
+        // Stop current time entry before starting a new one
+        .sendMessage({ type: 'stop' })
+        .then(() => browser.runtime.sendMessage(opts))
+        .then(togglbutton.addEditForm);
 
       return false;
-    });
-
-    // new button created - set state
-    chrome.extension.sendMessage({type: 'currentEntry'}, function (response) {
-      var description, currentEntry;
-      if (response.success) {
-        currentEntry = response.currentEntry;
-        description = invokeIfFunction(params.description);
-        if (description === currentEntry.description) {
-          activate(link);
-        }
-      }
     });
 
     return link;
   },
 
-  // If "entry" is passed, make button active; otherwise inactive.
+  // Query active timer entry, and set it to active.
+  queryAndUpdateTimerLink: function () {
+    // new button created - set state
+    browser.runtime.sendMessage({ type: 'currentEntry' })
+      .then(function (response) {
+        togglbutton.updateTimerLink(response.currentEntry);
+      });
+  },
+
+  // Make button corresponding to 'entry' active, if any. ; otherwise inactive.
   updateTimerLink: function (entry) {
-    var linkText = '',
-      color = '',
-      link = $(".toggl-button"),
-      minimal;
-    if (link === null) {
+    if (!entry) {
+      togglbutton.deactivateAllTimerLinks();
       return;
     }
-    minimal = link.classList.contains("min");
 
-    if (!entry || togglbutton.currentDescription !== entry.description) {
-      link.classList.remove('active');
-      if (!minimal) {
-        linkText = 'Start timer';
-      }
+    // Sort to find the "Best matching button".
+    // E.g. if running entry is `I am cat`, it should match `I am cat` over `I am cat and dog`
+    // Note: don't know why this isn't an exact match, probably some legacy reasons.
+    const matchingButtons = Array.from(document.querySelectorAll(
+      '.toggl-button:not(.toggl-button-edit-form-button)'))
+      .filter(button => button.title.indexOf(entry.description) !== -1)
+      .sort((a, b) => {
+        if (a.title.length > b.title.length) return -1;
+        if (b.title.length < a.title.length) return 1;
+        return 0;
+      });
+    const bestMatch = matchingButtons.pop();
+
+    if (bestMatch) {
+      togglbutton.activateTimerLink(bestMatch);
     } else {
-      link.classList.add('active');
-      color = '#1ab351';
-      if (!minimal) {
-        linkText = 'Stop timer';
+      togglbutton.deactivateAllTimerLinks();
+    }
+  },
+
+  activateTimerLink: function (link) {
+    if (link.classList.contains('active')) {
+      return;
+    }
+
+    togglbutton.deactivateAllTimerLinks();
+    link.classList.add('active');
+    link.style.color = '#1ab351';
+
+    const isMinimal = link.classList.contains('min');
+    if (!isMinimal) {
+      setLinkText(link, 'Stop timer');
+    }
+  },
+
+  deactivateAllTimerLinks: function () {
+    const allActive = document.querySelectorAll(
+      '.toggl-button.active:not(.toggl-button-edit-form-button)');
+    for (const active of allActive) {
+      togglbutton.deactivateTimerLink(active);
+    }
+  },
+
+  deactivateTimerLink: function (link) {
+    link.classList.remove('active');
+    link.style.color = '';
+    const minimal = link.classList.contains('min');
+    if (!minimal) {
+      setLinkText(link, 'Start timer');
+    }
+  },
+
+  updateTrackedTimerLink: function () {
+    const totalTime = $('.toggl-tracked');
+
+    let duration;
+
+    let h3;
+
+    let p;
+
+    if (totalTime) {
+      duration = togglbutton.calculateTrackedTime();
+
+      h3 = document.createElement('h3');
+      h3.textContent = 'Time tracked';
+
+      p = document.createElement('p');
+      p.setAttribute('title', 'Time tracked with Toggl: ' + duration);
+      p.textContent = duration;
+
+      totalTime.appendChild(h3);
+      totalTime.appendChild(p);
+    }
+  },
+
+  findProjectIdByName: function (name) {
+    let key;
+    for (key in togglbutton.projects) {
+      if (
+        togglbutton.projects.hasOwnProperty(key) &&
+        togglbutton.projects[key].name === name
+      ) {
+        return togglbutton.projects[key].id;
       }
     }
-    link.style.color = color;
-    link.innerHTML = linkText;
+    return undefined;
   },
 
   newMessage: function (request, sender, sendResponse) {
     if (request.type === 'stop-entry') {
       togglbutton.updateTimerLink();
+      togglbutton.entries = request.user.time_entries;
+      togglbutton.projects = request.user.projectMap;
+      togglbutton.updateTrackedTimerLink();
     } else if (request.type === 'sync') {
-      if ($("#toggl-button-edit-form") !== null) {
-        $("#toggl-button-edit-form").remove();
+      if ($('#toggl-button-edit-form') !== null) {
+        $('#toggl-button-edit-form').remove();
       }
     }
+    return undefined;
   }
 };
 
-chrome.extension.onMessage.addListener(togglbutton.newMessage);
+browser.runtime.onMessage.addListener(togglbutton.newMessage);
 window.addEventListener('focus', function (e) {
   // update button state
-  chrome.extension.sendMessage({type: 'currentEntry'}, function (response) {
-    togglbutton.updateTimerLink(response.currentEntry);
-  });
+  togglbutton.queryAndUpdateTimerLink();
 });

@@ -1,435 +1,613 @@
-/*jslint indent: 2, unparam: true*/
-/*global document: false, window: false, XMLHttpRequest: false, chrome: false, btoa: false, localStorage:false */
-"use strict";
+/// <reference path="./index.d.ts" />
 
-var TogglButton = chrome.extension.getBackgroundPage().TogglButton;
+import browser from 'webextension-polyfill';
+import React from 'react';
+import ReactDOM from 'react-dom';
+import { addSeconds, differenceInSeconds } from 'date-fns';
 
-var PopUp = {
-  $postStartText: " post-start popup",
+import { secToHhmmImproved } from './@toggl/time-format-utils';
+import { formatDuration } from './@toggl/time-format-utils/format-duration';
+import Summary from './components/Summary';
+import TimeEntriesList from './components/TimeEntriesList';
+import Pomodoro from './components/Pomodoro';
+import Timer from './components/Timer';
+import { ProjectAutoComplete, TagAutoComplete } from './lib/autocomplete';
+import { parseDuration } from './lib/timerUtils';
+import { groupTimeEntriesByDay } from './lib/groupUtils';
+import renderLogin from './initializers/login';
+
+let TogglButton = browser.extension.getBackgroundPage().TogglButton;
+const FF = navigator.userAgent.indexOf('Chrome') === -1;
+
+if (FF) {
+  document.querySelector('body').classList.add('ff');
+}
+
+const Popup = {
+  $postStartText: ' post-start popup',
   $popUpButton: null,
-  $togglButton: null,
-  $editButton: document.querySelector(".edit-button"),
-  $projectBullet: document.querySelector(".project-bullet"),
-  $error: null,
+  $errorLabel: document.querySelector('.error'),
+  $projectAutocomplete: null,
+  $tagAutocomplete: null,
   $timer: null,
   $tagsVisible: false,
-  $taskBlurTrigger: null,
   mousedownTrigger: null,
   projectBlurTrigger: null,
-  taskBlurTrigger: null,
-  $menuView: document.querySelector(".menu"),
-  $editView: document.querySelector("#entry-form"),
-  $loginView: document.querySelector("#login-form"),
+  editFormAdded: false,
+  durationChanged: false,
+  $billable: null,
+  $header: document.querySelector('.header'),
+  $menuView: document.querySelector('#menu'),
+  $editView: document.querySelector('#toggl-button-entry-form'),
+  $loginView: document.querySelector('#login-view'),
+  $revokedWorkspaceView: document.querySelector('#revoked-workspace'),
+  $entries: document.querySelector('.entries-list'),
+  defaultErrorMessage: 'Error connecting to server',
   showPage: function () {
-    if (TogglButton.$user !== null) {
-      PopUp.$editView.innerHTML = TogglButton.getEditForm();
-      PopUp.addEditEvents();
-      document.querySelector(".user-email").textContent = TogglButton.$user.email;
-      if (TogglButton.$curEntry === null) {
-        PopUp.$togglButton.setAttribute('data-event', 'timeEntry');
-        PopUp.$togglButton.textContent = 'Start timer';
-        PopUp.$togglButton.parentNode.classList.remove('tracking');
-        PopUp.$projectBullet.className = "project-bullet";
-      } else {
-        PopUp.$togglButton.setAttribute('data-event', 'stop');
-        PopUp.$togglButton.textContent = 'Stop';
-        PopUp.$togglButton.parentNode.classList.add('tracking');
-        PopUp.showCurrentDuration(true);
-      }
-    } else {
-      PopUp.switchView(PopUp.$loginView);
+    let dom;
+    if (!TogglButton) {
+      TogglButton = browser.extension.getBackgroundPage().TogglButton;
     }
+
+    try {
+      if (TogglButton.$user !== null) {
+        if (!PopUp.editFormAdded) {
+          dom = document.createElement('div');
+          dom.innerHTML = TogglButton.getEditForm();
+          PopUp.$editView.appendChild(dom.firstChild);
+          PopUp.addEditEvents();
+          PopUp.editFormAdded = true;
+        }
+
+        if (TogglButton.$curEntry === null) {
+          if (TogglButton.$latestStoppedEntry) {
+            localStorage.setItem(
+              'latestStoppedEntry',
+              JSON.stringify(TogglButton.$latestStoppedEntry)
+            );
+          }
+        }
+        if (!PopUp.$header.getAttribute('data-view')) {
+          PopUp.switchView(PopUp.$menuView);
+        }
+
+        Popup.renderApp();
+      } else {
+        localStorage.setItem('latestStoppedEntry', '');
+        PopUp.switchView(PopUp.$loginView);
+      }
+    } catch (e) {
+      browser.runtime.sendMessage({
+        type: 'error',
+        stack: e.stack,
+        category: 'Popup'
+      });
+    }
+  },
+
+  renderApp: function () {
+    PopUp.renderTimer();
+    PopUp.renderEntriesList();
+    PopUp.renderSummary();
+  },
+
+  renderSummary: function () {
+    const rootElement = document.getElementById('root-summary');
+    const totals = TogglButton.calculateSums();
+    ReactDOM.unmountComponentAtNode(rootElement);
+    ReactDOM.render(<Summary totals={totals} />, rootElement);
+  },
+
+  renderTimer: function () {
+    const rootElement = document.getElementById('root-timer');
+    const entry = TogglButton.$curEntry;
+    const project = entry && TogglButton.findProjectByPid(entry.pid) || null;
+    ReactDOM.render(<Timer entry={entry} project={project} />, rootElement);
   },
 
   sendMessage: function (request) {
-    chrome.extension.sendMessage(request, function (response) {
-      if (!!response.success) {
-        if (!!response.type && response.type === "New Entry" && TogglButton.$showPostPopup) {
-          PopUp.updateEditForm();
-          PopUp.switchView(PopUp.$editView);
-        } else if (response.type === "Update") {
-          TogglButton = chrome.extension.getBackgroundPage().TogglButton;
-        } else {
-          window.location.reload();
+    if (process.env.DEBUG) {
+      console.info('Popup:sendMessage', request);
+    }
+    return browser.runtime.sendMessage(request)
+      .then(function (response) {
+        if (process.env.DEBUG) {
+          console.info('Popup:sendMessageResponse', response, request);
         }
-      } else if (request.type === "login") {
-        PopUp.$error.style.display = 'block';
-      }
-    });
+
+        if (!response) {
+          return;
+        }
+
+        if (
+          request.type === 'list-continue' &&
+        !request.data &&
+        !response.success
+        ) {
+          return PopUp.switchView(PopUp.$revokedWorkspaceView);
+        }
+
+        if (response.success) {
+          if (request.type === 'create-workspace') {
+            return PopUp.switchView(PopUp.$menuView);
+          }
+          if (response.type === 'Update') {
+            // Edit form update
+            TogglButton = browser.extension.getBackgroundPage().TogglButton;
+            // Current TE update
+            PopUp.renderApp();
+          } else if (response.type === 'delete') {
+            PopUp.renderApp();
+          } else if (response.type === 'update') {
+            // Current TE update
+            PopUp.renderTimer();
+          } else if (response.type === 'Stop') {
+            PopUp.renderApp();
+          } else if (response.type === 'list-continue' || response.type === 'New Entry') {
+            PopUp.renderTimer();
+            PopUp.renderEntriesList();
+          } else {
+            window.location.reload();
+          }
+        } else if (
+          request.type === 'login' ||
+        (!!response.type &&
+          (response.type === 'New Entry' || response.type === 'Update'))
+        ) {
+          PopUp.showError(response.error || PopUp.defaultErrorMessage);
+        }
+      });
   },
 
-  showCurrentDuration: function (startTimer) {
-    if (TogglButton.$curEntry === null) {
-      PopUp.$togglButton.setAttribute('data-event', 'timeEntry');
-      PopUp.$togglButton.setAttribute('title', '');
-      PopUp.$togglButton.textContent = 'Start timer';
-      PopUp.$togglButton.parentNode.classList.remove('tracking');
-      clearInterval(PopUp.$timer);
-      PopUp.$timer = null;
-      PopUp.$projectBullet.className = "project-bullet";
+  showError: function (errorMessage) {
+    PopUp.$errorLabel.textContent = errorMessage;
+    PopUp.$errorLabel.classList.add('show');
+    setTimeout(function () {
+      PopUp.$errorLabel.classList.remove('show');
+    }, 3000);
+  },
+
+  renderEntriesList: function () {
+    if (TogglButton.pomodoroFocusMode && TogglButton.pomodoroAlarm) {
+      ReactDOM.render(<Pomodoro entry={TogglButton.$curEntry} interval={TogglButton.pomodoroInterval} />, document.getElementById('root-time-entries-list'));
+      return;
+    }
+    const entries = TogglButton.$user.time_entries;
+    if (!entries || entries.length < 1) {
+      ReactDOM.render(<TimeEntriesList />, document.getElementById('root-time-entries-list'));
       return;
     }
 
-    var duration = PopUp.msToTime(new Date() - new Date(TogglButton.$curEntry.start)),
-      description = TogglButton.$curEntry.description || "(no description)",
-      project;
+    // Transform entries into an ordered list of grouped time entries
+    const { listEntries, projects } = groupTimeEntriesByDay(entries);
 
-    PopUp.$togglButton.textContent = duration;
-    if (startTimer) {
-      PopUp.$timer = setInterval(function () { PopUp.showCurrentDuration(); }, 1000);
-      if (!!TogglButton.$curEntry.pid) {
-        project = TogglButton.findProjectByPid(TogglButton.$curEntry.pid);
-        if (project !== null) {
-          PopUp.$projectBullet.classList.add("color-" + project.color);
-          PopUp.$projectBullet.classList.add("project-color");
-          description += " - " + project.name;
-        }
-      }
-      PopUp.$editButton.textContent = description;
-      PopUp.$editButton.setAttribute('title', 'Click to edit "' + description + '"');
-    }
+    // Render react tree
+    ReactDOM.render(<TimeEntriesList timeEntries={listEntries} projects={projects} />, document.getElementById('root-time-entries-list'));
   },
 
   switchView: function (view) {
-    PopUp.$menuView.style.display = "none";
-    PopUp.$editView.style.display = "none";
-    PopUp.$loginView.style.display = "none";
-    view.style.display = "block";
+    if (view === PopUp.$loginView) {
+      renderLogin(PopUp.$loginView, true);
+    }
+    PopUp.$header.setAttribute('data-view', view.id);
   },
 
   formatMe: function (n) {
-    return (n < 10) ? '0' + n : n;
-  },
-
-  msToTime: function (duration) {
-    var seconds = parseInt((duration / 1000) % 60, 10),
-      minutes = parseInt((duration / (1000 * 60)) % 60, 10),
-      hours = parseInt((duration / (1000 * 60 * 60)), 10);
-
-    hours = (hours < 10) ? "0" + hours : hours;
-    minutes = (minutes < 10) ? "0" + minutes : minutes;
-    seconds = (seconds < 10) ? "0" + seconds : seconds;
-
-    return hours + ":" + minutes + ":" + seconds;
+    return n < 10 ? '0' + n : n;
   },
 
   /* Edit form functions */
-  updateEditForm: function () {
-    var pid = (!!TogglButton.$curEntry.pid) ? TogglButton.$curEntry.pid : 0,
-      tid = (!!TogglButton.$curEntry.tid) ? TogglButton.$curEntry.tid : 0,
-      togglButtonDescription = document.querySelector("#toggl-button-description"),
-      projectSelect,
-      placeholder;
 
-    togglButtonDescription.value = (!!TogglButton.$curEntry.description) ? TogglButton.$curEntry.description : "";
-    projectSelect = document.getElementById("toggl-button-project");
-    projectSelect.value = pid;
-    placeholder = document.querySelector("#toggl-button-project-placeholder > div");
-    placeholder.innerHTML = placeholder.title = PopUp.generateLabel(projectSelect, pid, "project");
-    PopUp.fetchTasks(pid, tid);
-    if (!!TogglButton.$curEntry.tags && TogglButton.$curEntry.tags.length) {
-      PopUp.setSelecedTags();
-    } else {
-      document.querySelector("#toggl-button-tag-placeholder > div").innerHTML = "Add tags";
-      document.querySelector("#toggl-button-tag").value = "";
-    }
-    //setCursorAtBeginning(togglButtonDescription);
-  },
+  /**
+   * Render edit-form for given time entry object
+   * @param timeEntry {Toggl.TimeEntry} - The time entry object to render
+   */
+  renderEditForm: function (timeEntry) {
+    const pid = timeEntry.pid || 0;
+    const tid = timeEntry.tid || 0;
+    const wid = timeEntry.wid;
+    const togglButtonDescription = document.querySelector(
+      '#toggl-button-description'
+    );
+    const togglButtonDuration = document.querySelector('#toggl-button-duration');
+    const isCurrentEntry = TogglButton.$curEntry && TogglButton.$curEntry.id === timeEntry.id;
 
-  setSelecedTags: function () {
-    var j, i,
-      s = document.getElementById("toggl-button-tag");
-    for (i = 0; i < TogglButton.$curEntry.tags.length; i += 1) {
-      for (j = 0; j < s.options.length; j += 1) {
-        if (s.options[j].textContent === TogglButton.$curEntry.tags[i]) {
-          s.options[j].selected = true;
-          i += 1;
-          j = 0;
-        }
-      }
+    const editView = document.getElementById('toggl-button-edit-form');
+    if (timeEntry.id && editView) {
+      editView.dataset.timeEntryId = timeEntry.id;
+      editView.dataset.workspaceId = timeEntry.wid;
+      editView.dataset.startTime = timeEntry.start;
+      editView.dataset.stopTime = timeEntry.stop || '';
     }
 
-    PopUp.updateTags();
+    const duration = differenceInSeconds(
+      new Date(isCurrentEntry ? undefined : timeEntry.stop),
+      new Date(timeEntry.start)
+    );
+    togglButtonDescription.value = timeEntry.description || '';
+    togglButtonDuration.value = secToHhmmImproved(duration, { html: false });
+
+    PopUp.$projectAutocomplete.setup(pid, tid);
+    PopUp.$tagAutocomplete.setup(timeEntry.tags, wid);
+
+    PopUp.setupBillable(!!timeEntry.billable, pid);
+    PopUp.switchView(PopUp.$editView);
+
+    // Put focus to the beginning of desctiption field
+    togglButtonDescription.focus();
+    togglButtonDescription.setSelectionRange(0, 0);
+    togglButtonDescription.scrollLeft = 0;
+
+    PopUp.durationChanged = false;
+    // Setup duration updater if entry is running
+    if (isCurrentEntry) {
+      PopUp.updateDurationInput(true);
+    }
   },
 
-  resetTasks: function () {
-    document.querySelector("#toggl-button-task-placeholder").removeEventListener('click', PopUp.delegateTaskClick);
-    document.querySelector("#toggl-button-task-placeholder > div").innerHTML = "Add task";
-    document.querySelector("#toggl-button-task").innerHTML = "";
-  },
-
-  delegateTaskClick: function (e) {
-    // Ignore this click if it caused the last task blur.
-    if (PopUp.$taskBlurTrigger === e.target) {
-      PopUp.$taskBlurTrigger = null;
+  updateDurationInput: function (startTimer) {
+    if (TogglButton.$curEntry === null) {
+      PopUp.stopDurationInput();
       return;
     }
 
-    var dropdown = document.getElementById('toggl-button-task'),
-      event = document.createEvent('MouseEvents');
-    event.initMouseEvent('mousedown', true, true, window);
-    dropdown.dispatchEvent(event);
+    const duration = formatDuration(TogglButton.$curEntry.start);
+    const durationField = document.querySelector('#toggl-button-duration');
+
+    // Update edit form duration field
+    if (PopUp.durationChanged === false) {
+      durationField.value = duration;
+    }
+
+    if (startTimer) {
+      PopUp.stopDurationInput();
+      PopUp.$timer = setInterval(function () {
+        if (process.env.DEBUG) console.log('🕒🐭 Tick tock, the mouse ran up the clock..');
+        PopUp.updateDurationInput();
+      }, 1000);
+    }
   },
 
-  getSelectedTags: function () {
-    var tags = [],
-      tag,
-      i,
-      s = document.getElementById("toggl-button-tag");
-    for (i = 0; i < s.options.length; i += 1) {
-      if (s.options[i].selected === true) {
-        tag = s.options[i].innerHTML;
-        tags.push(tag);
+  stopDurationInput: function () {
+    clearInterval(PopUp.$timer);
+  },
+
+  updateBillable: function (pid, noOverwrite) {
+    let project;
+    let i;
+    let pwid = TogglButton.$user.default_wid;
+    const ws = TogglButton.$user.workspaces;
+    let premium;
+
+    if (pid === 0) {
+      pwid = TogglButton.$user.default_wid;
+    } else {
+      project = TogglButton.findProjectByPid(pid);
+      if (!project) {
+        return;
+      }
+      pwid = project.wid;
+    }
+
+    for (i = 0; i < ws.length; i++) {
+      if (ws[i].id === pwid) {
+        premium = ws[i].premium;
+        break;
       }
     }
-    return tags;
+
+    PopUp.toggleBillable(premium);
+
+    if (!noOverwrite && (pid !== 0 && project.billable)) {
+      PopUp.$billable.classList.toggle('tb-checked', true);
+    }
   },
 
-  generateLabel: function (select, id, type) {
-    var selected = select.options[select.selectedIndex],
-      parent,
-      result = "";
-    if (parseInt(id, 10) === 0 || !selected) {
-      return "Add " + type;
-    }
-    parent = selected.parentNode;
-    if (type === "project" && parent.tagName === "OPTGROUP") {
-      result = parent.label + " - ";
-    }
-    return result + selected.text;
+  isNumber: function (n) {
+    return !isNaN(parseFloat(n)) && isFinite(n);
   },
 
-  submitForm: function (that) {
-    var taskButton = document.querySelector("#toggl-button-task"),
-      selectedProject = document.querySelector("#toggl-button-project"),
-      request = {
-        type: "update",
-        description: document.querySelector("#toggl-button-description").value,
-        pid: selectedProject.value,
-        projectName: selectedProject.options[selectedProject.selectedIndex].text,
-        tags: PopUp.getSelectedTags(),
-        tid: (taskButton && taskButton.value) ? taskButton.value : null,
-        respond: true,
-        service: "dropdown"
-      };
+  toggleBillable: function (visible) {
+    const tabIndex = visible ? '0' : '-1';
+    PopUp.$billable.setAttribute('tabindex', tabIndex);
+    PopUp.$billable.classList.toggle('no-billable', !visible);
+  },
+
+  setupBillable: function (billable, pid) {
+    PopUp.updateBillable(pid, true);
+    PopUp.$billable.classList.toggle('tb-checked', billable);
+  },
+
+  updateTimeEntry: function () {
+    PopUp.stopDurationInput();
+
+    // Translate human duration input if submitted without blurring
+    const $duration = document.querySelector('#toggl-button-duration');
+    let duration = $duration.value;
+    if (duration) {
+      duration = parseDuration(duration).asSeconds();
+      $duration.value = secToHhmmImproved(duration, { html: false });
+    }
+
+    if (!this.isformValid()) {
+      return;
+    }
+
+    const selected = PopUp.$projectAutocomplete.getSelected();
+    const billable = !!document.querySelector(
+      '.tb-billable.tb-checked:not(.no-billable)'
+    );
+
+    const request = {
+      type: 'update',
+      description: document.querySelector('#toggl-button-description').value,
+      pid: selected.pid,
+      projectName: selected.name,
+      tags: PopUp.$tagAutocomplete.getSelected(),
+      tid: selected.tid,
+      respond: true,
+      billable: billable,
+      service: 'dropdown'
+    };
+    const editView = document.getElementById('toggl-button-edit-form');
+    const timeEntryId = editView.dataset.timeEntryId;
+    if (timeEntryId) {
+      request.id = +timeEntryId;
+    }
+    const workspaceId = editView.dataset.workspaceId;
+    if (workspaceId) {
+      request.wid = +workspaceId;
+    }
+
+    const startTime = editView.dataset.startTime;
+    const stopTime = editView.dataset.stopTime;
+
+    if (duration) {
+      if (startTime && stopTime) {
+        request.start = new Date(startTime).toISOString();
+        request.duration = duration;
+        request.stop = addSeconds(new Date(startTime), duration).toISOString();
+      } else {
+        const start = new Date(
+          (new Date()).getTime() - duration * 1000
+        );
+        request.start = start.toISOString();
+        request.duration = -1 * Math.floor(start.getTime() / 1000);
+      }
+    }
+
     PopUp.sendMessage(request);
-    PopUp.closeTagsList(true);
     PopUp.switchView(PopUp.$menuView);
   },
 
-  updateTags: function (open) {
-    var tags = PopUp.getSelectedTags(),
-      tagsPlaceholder = document.querySelector("#toggl-button-tag-placeholder > div");
+  deleteTimeEntry: function () {
+    const editView = document.getElementById('toggl-button-edit-form');
+    const timeEntryId = editView.dataset.timeEntryId;
 
-    if (open) {
-      tagsPlaceholder.innerHTML = tagsPlaceholder.title = "Save tags";
-      return;
-    }
+    const request = {
+      type: 'delete',
+      id: timeEntryId
+    };
 
-    if (tags.length) {
-      tags = tags.join(',');
-    } else {
-      tags = "Add tags";
-    }
-    tagsPlaceholder.innerHTML = tagsPlaceholder.title = tags;
+    Popup.sendMessage(request);
+    PopUp.switchView(PopUp.$menuView);
   },
 
-  closeTagsList: function (close) {
-    var dropdown = document.getElementById('toggl-button-tag');
-    if (close) {
-      dropdown.style.display = "none";
-      PopUp.$tagsVisible = false;
-      return;
-    }
-    if (PopUp.$tagsVisible) {
-      dropdown.style.display = "none";
-      PopUp.updateTags();
-    } else {
-      dropdown.style.display = "block";
-      PopUp.updateTags(true);
-    }
-    PopUp.$tagsVisible = !PopUp.$tagsVisible;
+  closeForm: function () {
+    PopUp.switchView(PopUp.$menuView);
   },
 
-  fetchTasks: function (projectId, tid) {
-    var tasksRow = document.getElementById("toggl-button-tasks-row"),
-      taskSelect,
-      taskPlaceholder;
-
-    PopUp.resetTasks();
-    if (!TogglButton.$user.projectTaskList || projectId === 0) {
-      tasksRow.style.display = "none";
-      return;
-    }
-    // If tasks are available, populate the task dropdown.
-    chrome.extension.sendMessage({type: 'getTasksHtml', projectId: projectId}, function (response) {
-      if (response && response.success && response.html) {
-        document.querySelector('#toggl-button-task').innerHTML = response.html;
-        document.querySelector("#toggl-button-task-placeholder").addEventListener('click', PopUp.delegateTaskClick);
-        if (!!tid) {
-          taskPlaceholder = document.querySelector("#toggl-button-task-placeholder > div");
-          taskSelect = document.getElementById("toggl-button-task");
-          taskSelect.value = tid;
-          taskPlaceholder.innerHTML = taskPlaceholder.title = PopUp.generateLabel(taskSelect, tid, "task");
-        }
-        tasksRow.style.display = "block";
-      } else {
-        tasksRow.style.display = "none";
-      }
-    });
+  isformValid: function () {
+    return !!document.querySelector('#toggl-button-edit-form form:valid');
   },
 
   addEditEvents: function () {
     /* Edit form events */
-    var projectSelect = document.querySelector("#toggl-button-project"),
-      taskSelect = document.querySelector("#toggl-button-task"),
-      handler;
+    PopUp.$projectAutocomplete = new ProjectAutoComplete(
+      'project',
+      'li',
+      PopUp
+    );
+    PopUp.$tagAutocomplete = new TagAutoComplete('tag', 'li', PopUp);
+    PopUp.$billable = document.querySelector('.tb-billable');
 
-    handler = function (e) {
-      if (!/toggl-button/.test(e.target.className) && !/toggl-button/.test(e.target.parentElement.className)) {
-        PopUp.closeTagsList(true);
-        this.removeEventListener("click", handler);
+    document
+      .querySelector('#toggl-button-update')
+      .addEventListener('click', function (e) {
+        PopUp.updateTimeEntry(this);
+      });
+
+    document
+      .querySelector('#toggl-button-update')
+      .addEventListener('keydown', function (e) {
+        if (e.code === 'Enter' || e.code === 'Space') {
+          PopUp.updateTimeEntry(this);
+        }
+      });
+
+    // Cancel button
+    document.querySelector('#tb-edit-form-cancel')
+      .addEventListener('click', function (e) {
+        e.preventDefault();
+        PopUp.closeForm();
+      });
+    document.querySelector('#tb-edit-form-cancel')
+      .addEventListener('keydown', function (e) {
+        if (e.code === 'Enter' || e.code === 'Space') {
+          e.preventDefault();
+          PopUp.closeForm();
+        }
+      });
+
+    // Delete button
+    document
+      .querySelector('#toggl-button-delete')
+      .addEventListener('click', function (e) {
+        PopUp.deleteTimeEntry(this);
+      });
+
+    document
+      .querySelector('#toggl-button-delete')
+      .addEventListener('keydown', function (e) {
+        if (e.code === 'Enter' || e.code === 'Space') {
+          PopUp.deleteTimeEntry(this);
+        }
+      });
+
+    document
+      .querySelector('#toggl-button-entry-form form')
+      .addEventListener('submit', function (e) {
+        PopUp.updateTimeEntry(this);
+        e.preventDefault();
+      });
+
+    document
+      .querySelector('#toggl-button-duration')
+      .addEventListener('focus', (e) => {
+        PopUp.stopDurationInput();
+      });
+    document
+      .querySelector('#toggl-button-duration')
+      .addEventListener('blur', (e) => {
+        PopUp.updateDurationInput(true);
+      });
+
+    PopUp.$projectAutocomplete.onChange(function (selected) {
+      const project = TogglButton.findProjectByPid(selected.pid);
+
+      const wid = project ? project.wid : TogglButton.$curEntry.wid;
+
+      PopUp.$tagAutocomplete.setWorkspaceId(wid);
+    });
+
+    PopUp.$billable.addEventListener('click', function () {
+      this.classList.toggle('tb-checked');
+    });
+
+    PopUp.$billable.addEventListener('keydown', function (e) {
+      let prevent = false;
+      if (e.code === 'Space') {
+        prevent = true;
+        this.classList.toggle('tb-checked');
       }
-    };
 
-    document.querySelector("#toggl-button-update").addEventListener('click', function (e) {
-      PopUp.submitForm(this);
-    });
-
-    document.querySelector("#entry-form form").addEventListener('submit', function (e) {
-      PopUp.submitForm(this);
-      e.preventDefault();
-    });
-
-    document.addEventListener('mousedown', function (e) {
-      PopUp.mousedownTrigger = e.target;
-    });
-    document.addEventListener('mouseup', function (e) {
-      PopUp.mousedownTrigger = null;
-    });
-
-    document.querySelector("#toggl-button-project-placeholder").addEventListener('click', function (e) {
-      // Ignore this click if it caused the last project blur.
-      if (PopUp.projectBlurTrigger === e.target) {
-        PopUp.projectBlurTrigger = null;
-        return;
+      if (e.code === 'ArrowLeft') {
+        prevent = true;
+        this.classList.toggle('tb-checked', false);
       }
 
-      var dropdown = document.getElementById('toggl-button-project'),
-        event = document.createEvent('MouseEvents');
-      event.initMouseEvent('mousedown', true, true, window);
-      dropdown.dispatchEvent(event);
+      if (e.code === 'ArrowRight') {
+        prevent = true;
+        this.classList.toggle('tb-checked', true);
+      }
+
+      if (prevent) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
     });
+  },
 
-    document.querySelector("#toggl-button-tag-placeholder").addEventListener('click', function (e) {
-      PopUp.closeTagsList(false);
-    });
-
-    projectSelect.addEventListener('change', function (e) {
-      var placeholder = document.querySelector("#toggl-button-project-placeholder > div");
-      placeholder.innerHTML = placeholder.title = PopUp.generateLabel(this, this.value, "project");
-
-      // Force blur.
-      PopUp.projectBlurTrigger = null;
-      projectSelect.blur();
-
-      PopUp.fetchTasks(this.value);
-    });
-
-    projectSelect.addEventListener('click', function () {
-      // Catch click in case user selects an already-selected item - force blur.
-      PopUp.projectBlurTrigger = null;
-      projectSelect.blur();
-    });
-
-    projectSelect.addEventListener('blur', function () {
-      PopUp.projectBlurTrigger = PopUp.mousedownTrigger;
-    });
-
-    taskSelect.addEventListener('change', function (e) {
-      var taskPlaceholder = document.querySelector("#toggl-button-task-placeholder > div");
-      taskPlaceholder.innerHTML = taskPlaceholder.title = (taskSelect.value === "0") ? "Add task" : taskSelect.options[taskSelect.selectedIndex].text;
-
-      // Force blur.
-      PopUp.taskBlurTrigger = null;
-      taskSelect.blur();
-    });
-
-    taskSelect.addEventListener('click', function () {
-      // Catch click in case user selects an already-selected item - force blur.
-      PopUp.taskBlurTrigger = null;
-      projectSelect.blur();
-    });
-
-    taskSelect.addEventListener('blur', function (e) {
-      PopUp.taskBlurTrigger = PopUp.mousedownTrigger;
-    });
-
-    document.addEventListener("click", handler);
+  handleBackgroundMessage: function (request) {
+    if (process.env.DEBUG) {
+      console.log('Popup:handleBackgroundMessage', request);
+    }
+    switch (request.type) {
+      case 'bg/render-entries-list':
+        Popup.renderEntriesList();
+        break;
+    }
   }
 };
+window.PopUp = Popup;
 
 document.addEventListener('DOMContentLoaded', function () {
-  var req = {
-    type: "sync",
+  const req = {
+    type: 'sync',
     respond: false
   };
-  PopUp.sendMessage(req);
-  PopUp.$togglButton = document.querySelector(".stop-button");
-  PopUp.$error = document.querySelector(".error");
-  PopUp.showPage();
-  PopUp.$editButton.addEventListener('click', function () {
-    PopUp.updateEditForm();
-    PopUp.switchView(PopUp.$editView);
-  });
 
-  PopUp.$togglButton.addEventListener('click', function () {
-    var request = {
-      type: this.getAttribute('data-event'),
-      respond: true,
-      service: "dropdown"
-    };
-    clearInterval(PopUp.$timer);
-    PopUp.$timer = null;
+  try {
+    PopUp.sendMessage(req);
+    PopUp.showPage();
 
-    PopUp.sendMessage(request);
-  });
+    document
+      .querySelector('.header .sync-data')
+      .addEventListener('click', function () {
+        const request = { type: 'sync' };
+        browser.runtime.sendMessage(request);
+        browser.extension.getBackgroundPage().ga.report('sync', 'sync-toolbar-popup');
+      });
 
-  document.querySelector(".settings-button").addEventListener('click', function () {
-    chrome.runtime.openOptionsPage();
-  });
+    document
+      .querySelector('.header .cog')
+      .addEventListener('click', function () {
+        const request = {
+          type: 'options',
+          respond: false
+        };
 
-  document.querySelector(".logout-button").addEventListener('click', function () {
-    var request = {
-      type: "logout",
-      respond: true
-    };
-    PopUp.sendMessage(request);
-  });
+        browser.runtime.sendMessage(request);
+      });
 
-  document.querySelector(".sync-button").addEventListener('click', function () {
-    var request = {
-      type: "sync",
-      respond: false
-    };
-    PopUp.sendMessage(request);
-    window.close();
-  });
+    document
+      .querySelector('#workspace')
+      .addEventListener('submit', function (event) {
+        event.preventDefault();
+        const workspace = document.querySelector('#workspace_name').value;
+        if (!workspace) {
+          return PopUp.showError('Enter a workspace name');
+        }
+        const request = {
+          type: 'create-workspace',
+          respond: true,
+          workspace
+        };
+        PopUp.sendMessage(request);
+      });
 
-  document.querySelector("#signin").addEventListener('submit', function (event) {
-    event.preventDefault();
-    PopUp.$error.style.display = 'none';
-    var request = {
-      type: "login",
-      respond: true,
-      username: document.querySelector("#login_email").value,
-      password: document.querySelector("#login_password").value
-    };
-    PopUp.sendMessage(request);
-  });
+    document
+      .querySelector('#toggl-button-duration')
+      .addEventListener('keydown', function (event) {
+        // Doesn't cover all cases; can't really do it without introducing more state.
+        // Need a refactor.
+        if (event.code !== 'Enter' && event.code !== 'Tab') {
+          PopUp.durationChanged = true;
+        }
+      });
+    document
+      .querySelector('#toggl-button-duration')
+      .addEventListener('blur', function (event) {
+        const value = event.target.value || '';
+        const parsedInput = parseDuration(value).asSeconds();
+        event.target.value = secToHhmmImproved(parsedInput, { html: false });
+      });
 
-  document.querySelector(".header").addEventListener('click', function () {
-    chrome.tabs.create({url: "https://toggl.com/app"});
-  });
+    PopUp.$entries.addEventListener('click', function (e) {
+      if (!e.target.dataset.continueId) {
+        return;
+      }
+      e.stopPropagation();
+      const id = e.target.dataset.continueId;
+      const timeEntry = TogglButton.$user.time_entries.find((entry) => entry.id === +id);
 
+      const request = {
+        type: 'list-continue',
+        respond: true,
+        service: 'dropdown-list',
+        data: timeEntry
+      };
+
+      PopUp.sendMessage(request);
+      window.scrollTo(0, 0);
+    });
+  } catch (e) {
+    browser.runtime.sendMessage({
+      type: 'error',
+      stack: e.stack,
+      category: 'Popup'
+    });
+  }
+
+  browser.runtime.onMessage.addListener(Popup.handleBackgroundMessage);
 });

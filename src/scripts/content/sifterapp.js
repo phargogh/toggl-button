@@ -1,23 +1,35 @@
-/*jslint indent: 2, unparam: true*/
-/*global $: false, document: false, togglbutton: false*/
 'use strict';
 
-togglbutton.render('.subheader-status .subheader-content', {}, function (elem) {
-  var link, description, project, company,
-    titleElem = $('.subheader-content h2'),
-    projectElem = $('#header h1'),
-    companyElem = $('#header h1 .company');
+// Listing view
+togglbutton.render('.issues .issue:not(.toggl)', { observe: true }, function (
+  elem
+) {
+  const description = $('.subject span.issue-status', elem).textContent.trim();
+  const project = $('.switcher-project-name').textContent.trim();
 
-  description = titleElem.innerText;
-  project = projectElem.textContent;
-  company = companyElem.textContent;
-  project = project.substring(0, project.length - company.length - 1);
-
-  link = togglbutton.createTimerLink({
+  const link = togglbutton.createTimerLink({
     className: 'sifterapp',
     description: description,
     projectName: project
   });
 
-  $('.subheader-content h2').appendChild(link);
+  $('.subject a.issue-status', elem).appendChild(link);
 });
+
+// Detail view
+togglbutton.render(
+  '.issue-detail-subject:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const description = $('h1', elem).childNodes[0].textContent.trim();
+    const project = $('.switcher-project-name').textContent.trim();
+
+    const link = togglbutton.createTimerLink({
+      className: 'sifterapp',
+      description: description,
+      projectName: project
+    });
+
+    elem.appendChild(link);
+  }
+);

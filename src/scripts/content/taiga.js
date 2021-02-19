@@ -1,79 +1,116 @@
-/*jslint indent: 2 */
-/*global $: false, document: false, togglbutton: false, createTag:false*/
-
 'use strict';
 
-/* User story details button */
-togglbutton.render('.us-detail:not(.toggl)', {observe: true}, function (elem) {
-  var link,
-    refElem,
-    titleElem,
-    container = $('.us-title-text');
+/* Epic/User story/Task/Issue details button */
+togglbutton.render(
+  '.detail-title-wrapper:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const projectElem = $('.us-detail .project-name');
+    const refElem = $('.detail-number', elem);
+    const titleElem = $('.detail-subject', elem);
 
-  link = togglbutton.createTimerLink({
+    const link = togglbutton.createTimerLink({
+      className: 'taiga',
+      buttonType: 'minimal',
+      projectName: projectElem.textContent,
+      description: refElem.textContent.trim() + ' ' + titleElem.textContent
+    });
+
+    elem.insertBefore(link, $('.detail-title-text', elem));
+  }
+);
+
+/* Epics Dashboard */
+togglbutton.render('.epic-row .name:not(.toggl)', { observe: true }, function (
+  elem
+) {
+  const titleElem = $('a', elem);
+  const projectElem = $('.epics .project-name');
+
+  const link = togglbutton.createTimerLink({
     className: 'taiga',
     buttonType: 'minimal',
-    description: function () {
-      refElem = $('.us-number', elem);
-      titleElem = $('.view-subject', elem);
-      return refElem.textContent + ' ' + titleElem.textContent;
-    },
-    projectName: function () {
-      return $('.project-name', elem).textContent;
-    }
-  });
-
-  container.insertBefore(link, $('.us-number', elem));
-});
-
-/* Backlog list buttons */
-togglbutton.render('.user-story-name:not(.toggl)', {observe: true}, function (elem) {
-
-  var link,
-    projectElem = $('.backlog .project-name'),
-    refElem = $('a > span:nth-child(1)', elem),
-    taskElem = $('a > span:nth-child(2)', elem);
-
-  link = togglbutton.createTimerLink({
-    className: 'taiga-backlog',
-    buttonType: 'minimal',
-    projectName: projectElem.textContent,
-    description: refElem.textContent + ' ' + taskElem.textContent
+    description: titleElem.textContent,
+    projectName: projectElem.textContent
   });
 
   elem.insertBefore(link, $('a', elem));
 });
 
-/* Kanban button */
-togglbutton.render('.kanban-task-inner:not(.toggl)', {observe: true}, function (elem) {
-  var link,
-    refElem = $('.task-num', elem),
-    titleElem = $('.task-name', elem),
-    projectElem = $('.kanban .project-name');
+/* Backlog buttons */
+togglbutton.render('.user-story-name:not(.toggl)', { observe: true }, function (
+  elem
+) {
+  const projectElem = $('.backlog .project-name');
+  const refElem = $('a > span:nth-child(1)', elem);
+  const taskElem = $('a > span:nth-child(2)', elem);
 
-  link = togglbutton.createTimerLink({
+  const link = togglbutton.createTimerLink({
     className: 'taiga',
     buttonType: 'minimal',
-    description: refElem.textContent + ' ' + titleElem.textContent,
-    projectName: projectElem.textContent
+    projectName: projectElem.textContent,
+    description: refElem.textContent.trim() + ' ' + taskElem.textContent
   });
 
-  elem.appendChild(link);
+  elem.insertBefore(link, $('a', elem));
 });
 
-/* Sprint Taskboard tasks button */
-togglbutton.render('.taskboard-task-inner:not(.toggl)', {observe: true}, function (elem) {
-  var link,
-    refElem = $('.task-num', elem),
-    titleElem = $('.task-name', elem),
-    projectElem = $('.taskboard .project-name-short');
+/* Kanban buttons */
+togglbutton.render(
+  '.kanban .card-title:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const refElem = $('a > span:nth-child(1)', elem);
+    const titleElem = $('a > span:nth-child(2)', elem);
+    const projectElem = $('.kanban .project-name');
 
-  link = togglbutton.createTimerLink({
-    className: 'taiga',
-    buttonType: 'minimal',
-    description: refElem.textContent + ' ' + titleElem.textContent,
-    projectName: projectElem.textContent
-  });
+    const link = togglbutton.createTimerLink({
+      className: 'taiga',
+      buttonType: 'minimal',
+      description: refElem.textContent + ' ' + titleElem.textContent,
+      projectName: projectElem.textContent
+    });
 
-  elem.appendChild(link);
-});
+    elem.insertBefore(link, $('a', elem));
+  }
+);
+
+/* Sprint Taskboard tasks buttons */
+togglbutton.render(
+  '.taskboard .card-title:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const refElem = $('.card-title > a > span:nth-child(1)', elem);
+    const titleElem = $('.card-title > a > span:nth-child(2)', elem);
+    const projectElem = $('.taskboard .project-name-short');
+
+    const link = togglbutton.createTimerLink({
+      className: 'taiga',
+      buttonType: 'minimal',
+      description: refElem.textContent.trim() + ' ' + titleElem.textContent,
+      projectName: projectElem.textContent
+    });
+
+    elem.insertBefore(link, $('a', elem));
+  }
+);
+
+/* Issues list buttons */
+togglbutton.render(
+  '.issues-table .row:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const projectElem = $('.issues-page .project-name');
+    const refElem = $('a > span:nth-child(1)', elem);
+    const taskElem = $('a > span:nth-child(2)', elem);
+
+    const link = togglbutton.createTimerLink({
+      className: 'taiga',
+      buttonType: 'minimal',
+      projectName: projectElem.textContent,
+      description: refElem.textContent.trim() + ' ' + taskElem.textContent
+    });
+
+    elem.insertBefore(link, $('.subject', elem));
+  }
+);

@@ -1,22 +1,104 @@
-/*jslint indent: 2, unparam: true*/
-/*global $: false, document: false, togglbutton: false*/
-
 'use strict';
 
-togglbutton.render('.content .page-title:not(.toggl)', {observe: true}, function (elem) {
-  var link,  description,
-    numElem = $('.page-title'),
-    titleElem = $(".issue-box .title, .issue-title"),
-    projectElem = $('.title').firstChild;
+togglbutton.render(
+  '.issue-details .detail-page-description:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const breadcrumbsSubTitle = getBreadcrumbsSubTitle();
 
-  description = titleElem.textContent;
-  description = numElem.firstChild.textContent.trim() + " " + description.trim();
+    let description = getTitle(elem);
+    if (breadcrumbsSubTitle) {
+      description =
+        breadcrumbsSubTitle
+          .split(' ')
+          .pop()
+          .trim() +
+        ' ' +
+        description;
+    }
 
-  link = togglbutton.createTimerLink({
+    insertButton($('.detail-page-header-actions'), description, true);
+    insertButton($('.time_tracker'), description);
+  }
+);
+
+togglbutton.render(
+  '.merge-request-details > .detail-page-description:not(.toggl)',
+  { observe: true },
+  function (elem) {
+    const breadcrumbsSubTitle = getBreadcrumbsSubTitle();
+
+    let description = getTitle(elem);
+    if (breadcrumbsSubTitle) {
+      description =
+        'MR' +
+        breadcrumbsSubTitle
+          .split(' ')
+          .pop()
+          .trim()
+          .replace('!', '') +
+        '::' +
+        description;
+    }
+
+    insertButton($('.detail-page-header-actions'), description, true);
+    insertButton($('.time_tracker'), description);
+  }
+);
+
+/**
+ * @param $el
+ * @param {String} description
+ * @param {boolean} prepend
+ */
+function insertButton ($el, description, prepend = false) {
+  const link = togglbutton.createTimerLink({
     className: 'gitlab',
     description: description,
-    projectName: projectElem.textContent.split(' / ').pop()
+    tags: tagsSelector,
+    projectName: getProjectSelector
   });
 
-  $('.content .page-title').appendChild(link);
-});
+  if (prepend) {
+    $el.parentElement.insertBefore(link, $el);
+  } else {
+    $el.parentElement.appendChild(link, $el);
+  }
+}
+
+function getTitle (parent) {
+  const $el = $('.title', parent);
+
+  return $el ? $el.textContent.trim() : '';
+}
+
+function getBreadcrumbsSubTitle () {
+  const $el =
+    $('.identifier') ||
+    $('.breadcrumbs-list li:last-child .breadcrumbs-sub-title');
+
+  return $el ? $el.textContent.trim() : '';
+}
+
+function getProjectSelector () {
+  const $el = $('.title .project-item-select-holder') || $('.breadcrumbs-list li:nth-last-child(3) .breadcrumb-item-text');
+  return $el ? $el.textContent.trim() : '';
+}
+
+function tagsSelector () {
+  // GitLab 13.5
+  const nodeList = document.querySelectorAll('div.labels span[data-qa-label-name]');
+
+  if (!nodeList) {
+    return [];
+  }
+
+  const tags = [];
+
+  for (const node of Object.values(nodeList)) {
+    const tagName = node.getAttribute('data-qa-label-name');
+    tags.push(tagName);
+  }
+
+  return tags;
+}
