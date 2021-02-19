@@ -27,6 +27,7 @@ togglbutton.render('#partial-discussion-sidebar', { observe: true }, function (
 
   const div = document.createElement('div');
   div.classList.add('discussion-sidebar-item', 'toggl');
+  let projectName = projectElem && projectElem.textContent
 
    /* JD Customizations
     * */
@@ -35,10 +36,14 @@ togglbutton.render('#partial-discussion-sidebar', { observe: true }, function (
   const repoSlug = repoOwner + '/' + repoName;
   description = repoSlug + " " + description;
 
+  if (repoName.toLowerCase().includes('invest')){
+    projectName = "InVEST";
+  }
+
   const link = togglbutton.createTimerLink({
     className: 'github',
     description: description,
-    projectName: projectElem && projectElem.textContent
+    projectName: projectName
   });
 
   div.appendChild(link);
